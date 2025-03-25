@@ -39,7 +39,7 @@ bantime = 3600
 EOF
 
 # configure ufw
-ufw enable
+yes | ufw enable
 ufw allow $SSH_PORT
 ufw allow 80
 ufw allow 443
