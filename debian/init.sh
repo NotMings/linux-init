@@ -27,16 +27,24 @@ apt install -y \
 # configure fail2ban
 touch /etc/fail2ban/jail.local
 cat <<EOF > /etc/fail2ban/jail.local
+[DEFAULT]
+bantime = 3600
+findtime = 300
+maxretry = 5
+banaction = iptables-allports
+action = %(action_mwl)s
+
 [sshd]
+ignoreip = 127.0.0.1/8
 enabled = true
-port = ssh
+port = $SSH_PORT
 filter = sshd
 logpath = /var/log/auth.log
 backend = systemd
-maxretry = 5
-bantime = 3600
 
 EOF
+
+systemctl restart fail2ban
 
 # configure ufw
 yes | ufw enable
