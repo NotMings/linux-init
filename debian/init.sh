@@ -63,17 +63,6 @@ apt install -y \
     docker-compose-plugin
 
 if [ "$INSTALL_CADDY" = true ]; then
-    # install go
-    wget https://go.dev/dl/go1.24.1.linux-amd64.tar.gz
-    rm -rf /usr/local/go && tar -C /usr/local -xzf go1.24.1.linux-amd64.tar.gz
-    chmod -R 755 /usr/local/go
-    rm -f go1.24.1.linux-amd64.tar.gz
-    cat <<EOF >> /etc/profile
-export PATH=$PATH:/usr/local/go/bin
-
-EOF
-    source /etc/profile
-
     # install caddy
     apt install -y debian-keyring debian-archive-keyring apt-transport-https
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-xcaddy-archive-keyring.gpg
