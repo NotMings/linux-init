@@ -68,7 +68,7 @@ if [ "$INSTALL_CADDY" = true ]; then
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-xcaddy-archive-keyring.gpg
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/xcaddy/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-xcaddy.list
     apt update
-    apt install xcaddy
+    apt install -y xcaddy
 
     xcaddy build \
         --with github.com/caddy-dns/cloudflare \
@@ -133,5 +133,6 @@ EOF
     chmod 644 /etc/systemd/system/caddy.service
 
     systemctl daemon-reload
-    systemctl enable --now caddy
+    systemctl enable caddy
+    systemctl start caddy
 fi
