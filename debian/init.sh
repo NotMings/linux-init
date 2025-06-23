@@ -1,5 +1,12 @@
 #!/bin/bash
 
+if [ "$(id -u)" -ne 0 ]; then 
+  echo "This script must be run as root or with sudo." >&2
+  exit 1
+fi
+
+set -e
+
 SSH_PORT=22
 INSTALL_CADDY=false
 
@@ -11,6 +18,11 @@ while [[ "$#" -gt 0 ]]; do
     esac
     shift
 done
+
+if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
+    echo "Invalid SSH port: $SSH_PORT. It must be a number between 1 and 65535." >&2
+    exit 1
+fi
 
 apt update
 apt upgrade -y
