@@ -186,7 +186,7 @@ jobs:
 
           # Reinstall using automatic SSH detection and a multi-module download.
           bash debian/init.sh --with-fail2ban --with-docker \
-              --witch-caddy-cloudflare --witch-caddy-github.com/caddy-dns/route53
+              --with-caddy-cloudflare --with-caddy-github.com/caddy-dns/route53
           sha256sum --check /tmp/caddy-config.sha256
           for service in fail2ban docker caddy; do
               systemctl is-active --quiet "$service"

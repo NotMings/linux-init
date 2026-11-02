@@ -34,7 +34,7 @@ Options:
   --with-fail2ban           Install and configure Fail2ban (default: false).
   --with-docker             Install Docker Engine, Buildx and Compose (default: false).
   --with-caddy              Download standard Caddy (default: false).
-  --witch-caddy-MODULE      Download Caddy with a module; repeat to combine modules.
+  --with-caddy-MODULE       Download Caddy with a module; repeat to combine modules.
                             Short names select github.com/caddy-dns/MODULE.
                             Full Go package paths are also accepted after the prefix.
   -h, --help                Show this help.
@@ -44,9 +44,9 @@ Examples:
   sudo bash debian/init.sh --upgrade-system
   sudo bash debian/init.sh --with-fail2ban
   sudo bash debian/init.sh --with-docker
-  sudo bash debian/init.sh --witch-caddy-cloudflare
-  sudo bash debian/init.sh --witch-caddy-cloudflare --witch-caddy-route53
-  sudo bash debian/init.sh --witch-caddy-github.com/mholt/caddy-l4
+  sudo bash debian/init.sh --with-caddy-cloudflare
+  sudo bash debian/init.sh --with-caddy-cloudflare --with-caddy-route53
+  sudo bash debian/init.sh --with-caddy-github.com/mholt/caddy-l4
 EOF
 }
 
@@ -141,8 +141,8 @@ parse_arguments() {
                 INSTALL_CADDY=true
                 shift
                 ;;
-            --witch-caddy-*)
-                add_caddy_module "${1#--witch-caddy-}"
+            --with-caddy-*)
+                add_caddy_module "${1#--with-caddy-}"
                 shift
                 ;;
             -h | --help)

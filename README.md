@@ -8,7 +8,7 @@ sudo bash debian/init.sh
 sudo bash ubuntu/init.sh
 
 # 指定多个 SSH 端口，并安装可选组件
-sudo bash ubuntu/init.sh --ssh 22 2222 --with-fail2ban --with-docker --witch-caddy-cloudflare
+sudo bash ubuntu/init.sh --ssh 22 2222 --with-fail2ban --with-docker --with-caddy-cloudflare
 
 # 按官方路径升级发行版
 sudo bash ubuntu/init.sh --upgrade-system
@@ -24,7 +24,7 @@ bash ubuntu/init.sh --help
 | `--with-fail2ban` | 安装并配置 Fail2ban |
 | `--with-docker` | 安装 Docker Engine、Buildx 和 Compose |
 | `--with-caddy` | 从官网下载 Caddy 标准版 |
-| `--witch-caddy-MODULE` | 下载带模块的 Caddy，可重复传入；短名称对应 `github.com/caddy-dns/MODULE`，也支持完整包路径 |
+| `--with-caddy-MODULE` | 下载带模块的 Caddy，可重复传入；短名称对应 `github.com/caddy-dns/MODULE`，也支持完整包路径 |
 | `--help` | 显示帮助 |
 
 - UFW 放行 SSH 端口；选择安装 Caddy 时额外放行 80 和 443 端口。
