@@ -159,7 +159,7 @@ jobs:
           sha256sum --check /tmp/original-ssh.sha256
           ufw status | grep -F 'Status: active'
           for port in 2222 2200; do
-              ufw status | grep -E "^${port}/tcp[[:space:]]+ALLOW"
+              ufw status | grep -E "^${port}[[:space:]]+ALLOW"
           done
           for port in 80 443; do
               if ufw status | grep -E "^${port}(/(tcp|udp))?[[:space:]]+.*ALLOW"; then

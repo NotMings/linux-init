@@ -397,7 +397,7 @@ configure_firewall() {
 
     # Keep current ports accessible until the new SSH configuration takes effect.
     for port in "${ACTIVE_SSH_PORTS[@]}" "${SSH_PORTS[@]}"; do
-        ufw allow "$port/tcp"
+        ufw allow "$port"
     done
     if [[ "$INSTALL_CADDY" == true ]]; then
         ufw allow 80
