@@ -254,6 +254,30 @@ check_install_options() {
     fi
 }
 
+is_default_ubuntu_pro_preference() {
+    local preference="$1" package expected_md5 actual_md5
+
+    case "$preference" in
+        /etc/apt/preferences.d/ubuntu-pro-esm-apps | \
+            /etc/apt/preferences.d/ubuntu-pro-esm-infra) ;;
+        *) return 1 ;;
+    esac
+
+    actual_md5="$(md5sum -- "$preference")" || return 1
+    actual_md5="${actual_md5%% *}"
+    for package in ubuntu-pro-client ubuntu-advantage-tools; do
+        expected_md5="$(
+            dpkg-query -W -f='${Conffiles}\n' "$package" 2>/dev/null |
+                awk -v path="$preference" '$1 == path && NF == 2 { print $2; exit }'
+        )" || continue
+        [[ "$expected_md5" =~ ^[0-9a-f]{32}$ ]] || continue
+        if [[ "$actual_md5" == "$expected_md5" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 upgrade_system() {
     local previous_version channel metadata_url check_output audit holds source_file
     local check_status=0
@@ -268,6 +292,11 @@ upgrade_system() {
 
     for source_file in /etc/apt/preferences /etc/apt/preferences.d/*; do
         [[ -f "$source_file" ]] || continue
+        # Ubuntu Pro ships these preferences even when ESM is not enabled.
+        if is_default_ubuntu_pro_preference "$source_file"; then
+            echo "Keeping unmodified Ubuntu Pro preference: $source_file"
+            continue
+        fi
         if grep -Eq '^[[:space:]]*[^#[:space:]]' "$source_file"; then
             die "Review APT pinning before upgrading: $source_file"
         fi
