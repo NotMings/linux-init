@@ -1,0 +1,274 @@
+name: Ubuntu initialization
+
+on:
+  push:
+    paths:
+      - ubuntu/**
+      - config_files/**
+      - .github/**
+  pull_request:
+    paths:
+      - ubuntu/**
+      - config_files/**
+      - .github/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  supported-releases:
+    name: Find supported Ubuntu releases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.releases.outputs.matrix }}
+    steps:
+      - name: Update official release lifecycle data
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y distro-info-data
+          curl --fail --show-error --location --retry 3 --max-time 60 \
+            https://changelogs.ubuntu.com/meta-release --output "$RUNNER_TEMP/meta-release"
+          curl --fail --show-error --location --retry 3 --max-time 60 \
+            https://changelogs.ubuntu.com/meta-release-lts --output "$RUNNER_TEMP/meta-release-lts"
+
+      - name: Select supported releases and offered upgrade paths
+        id: releases
+        shell: bash
+        run: |
+          python3 <<'PYTHON'
+          import csv
+          import datetime
+          from email.parser import Parser
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          today = datetime.datetime.now(datetime.timezone.utc).date()
+          published = []
+          supported = {}
+          with open("/usr/share/distro-info/ubuntu.csv") as data:
+              for row in csv.DictReader(data):
+                  version = row["version"].split()[0]
+                  codename = row["series"]
+                  if not re.fullmatch(r"[0-9]{2}\.[0-9]{2}", version):
+                      continue
+                  if not re.fullmatch(r"[a-z][a-z0-9]*", codename):
+                      raise SystemExit(f"Unexpected Ubuntu codename: {codename!r}")
+                  try:
+                      released = datetime.date.fromisoformat(row["release"])
+                      # Standard server support only; Ubuntu Pro/ESM is excluded.
+                      support_end = datetime.date.fromisoformat(row.get("eol-server") or row["eol"])
+                  except (TypeError, ValueError):
+                      continue
+                  if released > today:
+                      continue
+                  release = {"version": version, "codename": codename,
+                             "support_end": support_end.isoformat(),
+                             "channel": "lts" if "LTS" in row["version"] else "normal"}
+                  published.append(release)
+                  if today < support_end:
+                      supported[version] = release
+          if not supported:
+              raise SystemExit("No Ubuntu releases in standard support found; check lifecycle data.")
+
+          offered = {}
+          for channel, filename in [("normal", "meta-release"), ("lts", "meta-release-lts")]:
+              text = (Path(os.environ["RUNNER_TEMP"]) / filename).read_text()
+              records = [Parser().parsestr(part) for part in text.strip().split("\n\n")]
+              if not any(record.get("Dist") for record in records):
+                  raise SystemExit(f"Invalid Ubuntu upgrade metadata: {filename}")
+              offered[channel] = {record["Dist"] for record in records
+                                  if record.get("Supported") == "1" and record.get("UpgradeTool")}
+
+          def version_key(release):
+              return tuple(map(int, release["version"].split(".")))
+
+          published.sort(key=version_key)
+          include = [dict(release, scenario="initialize", target="")
+                     for release in sorted(supported.values(), key=version_key)]
+          for current in sorted(supported.values(), key=version_key):
+              candidates = [release for release in published if version_key(release) > version_key(current)
+                            and (current["channel"] != "lts" or release["channel"] == "lts")]
+              if not candidates:
+                  continue
+              target = candidates[0]
+              if target["version"] in supported and target["codename"] in offered[current["channel"]]:
+                  include.append(dict(current, scenario="upgrade", target=target["version"]))
+          matrix = json.dumps({"include": include}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"matrix={matrix}\n")
+          print(json.dumps(include, indent=2))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("Ubuntu standard server support only; Ubuntu Pro/ESM excluded.\n\n")
+              for release in include:
+                  summary.write(f"- Ubuntu {release['version']} ({release['codename']}), "
+                                f"supported until {release['support_end']}: {release['scenario']} "
+                                f"{release['target']}\n")
+          PYTHON
+
+  run-script:
+    name: Ubuntu ${{ matrix.version }} / ${{ matrix.scenario }}
+    needs: supported-releases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.supported-releases.outputs.matrix) }}
+    env:
+      VM_DISTRO: ubuntu
+      OS_VERSION: ${{ matrix.version }}
+      OS_CODENAME: ${{ matrix.codename }}
+      UPGRADE_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Set virtual machine directory
+        run: printf 'VM_DIR=%s/ubuntu-vm\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install virtual machine tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ovmf
+
+      - name: Boot official Ubuntu cloud image
+        run: bash .github/scripts/linux-vm.sh start
+
+      - name: Copy initialization script into Ubuntu
+        run: bash .github/scripts/linux-vm.sh copy
+
+      - name: Run default initialization and optional components
+        if: matrix.scenario == 'initialize'
+        run: |
+          bash .github/scripts/linux-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
+          cd /opt/linux-init
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          bash ubuntu/init.sh
+          ufw status | grep -F 'Status: active'
+          for port in 2222 2200; do
+              ufw status | grep -E "^${port}/tcp[[:space:]]+ALLOW"
+          done
+          for port in 80 443; do
+              if ufw status | grep -E "^${port}(/(tcp|udp))?[[:space:]]+.*ALLOW"; then
+                  echo "Unexpected default firewall rule for port $port" >&2
+                  exit 1
+              fi
+          done
+          for package in fail2ban docker-ce; do
+              if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+                  echo "Unexpected default installation: $package" >&2
+                  exit 1
+              fi
+          done
+          if command -v caddy; then
+              echo "Unexpected default installation: caddy" >&2
+              exit 1
+          fi
+          test ! -e /etc/fail2ban/jail.d/99-linux-init.local
+
+          # Exercise spaces, comma-separated values, duplicate ports and repeated options.
+          bash ubuntu/init.sh --ssh 2222 2200,2222 --ssh 2200 --with-caddy
+          for port in 80 443; do
+              ufw status | grep -E "^${port}[[:space:]]+ALLOW"
+          done
+          systemctl is-active --quiet caddy
+          caddy version
+          cat > /etc/caddy/Caddyfile <<'CADDY'
+          :80 {
+              respond "linux-init-ok"
+          }
+          CADDY
+          printf 'CI_CONFIG_PRESERVED=yes\n' > /etc/caddy/.env
+          sha256sum /etc/caddy/Caddyfile /etc/caddy/.env > /tmp/caddy-config.sha256
+          systemctl reload caddy
+          curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1/ | grep -Fx linux-init-ok
+
+          # Reinstall using automatic SSH detection and a multi-module download.
+          bash ubuntu/init.sh --with-fail2ban --with-docker \
+              --witch-caddy-cloudflare --witch-caddy-github.com/caddy-dns/route53
+          sha256sum --check /tmp/caddy-config.sha256
+          for service in fail2ban docker caddy; do
+              systemctl is-active --quiet "$service"
+              systemctl is-enabled --quiet "$service"
+          done
+          timeout 30 bash -c 'until fail2ban-client status sshd; do sleep 1; done'
+          grep -Fx 'port = 2200,2222' /etc/fail2ban/jail.d/99-linux-init.local
+          docker info
+          docker buildx version
+          docker compose version
+          docker run --rm hello-world
+          caddy list-modules | grep -Fx dns.providers.cloudflare
+          caddy list-modules | grep -Fx dns.providers.route53
+          curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1/ | grep -Fx linux-init-ok
+          GUEST
+          # New connections on both ports must still work after UFW is enabled.
+          bash .github/scripts/linux-vm.sh exec true
+          bash .github/scripts/linux-vm.sh exec-secondary true
+
+      - name: Prepare current Ubuntu release for upgrade
+        if: matrix.scenario == 'upgrade'
+        run: |
+          bash .github/scripts/linux-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          apt-get -o APT::Update::Error-Mode=any update
+          apt-get -o APT::Get::Always-Include-Phased-Updates=true dist-upgrade -y
+          GUEST
+          bash .github/scripts/linux-vm.sh reboot
+
+      - name: Run official Ubuntu release upgrade
+        if: matrix.scenario == 'upgrade'
+        run: |
+          bash .github/scripts/linux-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
+          cd /opt/linux-init
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          bash ubuntu/init.sh --upgrade-system --with-fail2ban --with-docker
+          test -n "$(find /var/backups/linux-init -name package-selections.txt -print -quit)"
+          test -z "$(dpkg --audit)"
+          ufw status | grep -F 'Status: active'
+          for service in fail2ban docker; do
+              systemctl is-active --quiet "$service"
+          done
+          GUEST
+          bash .github/scripts/linux-vm.sh exec cat /etc/os-release | tee "$VM_DIR/logs/upgraded-os-release"
+          grep -Fx "VERSION_ID=\"$UPGRADE_TARGET\"" "$VM_DIR/logs/upgraded-os-release"
+
+      - name: Reboot and verify upgraded system
+        if: matrix.scenario == 'upgrade'
+        run: |
+          bash .github/scripts/linux-vm.sh reboot
+          bash .github/scripts/linux-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
+          uname -a
+          test -z "$(dpkg --audit)"
+          for service in ssh fail2ban docker; do
+              systemctl is-active --quiet "$service"
+          done
+          ufw status | grep -F 'Status: active'
+          timeout 30 bash -c 'until fail2ban-client status sshd; do sleep 1; done'
+          docker run --rm hello-world
+          GUEST
+          bash .github/scripts/linux-vm.sh exec-secondary true
+
+      - name: Collect system logs
+        if: always()
+        run: bash .github/scripts/linux-vm.sh logs
+
+      - name: Stop virtual machine
+        if: always()
+        run: bash .github/scripts/linux-vm.sh stop
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-${{ matrix.version }}-${{ matrix.scenario }}
+          path: ${{ env.VM_DIR }}/logs/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -3,12 +3,18 @@
 set -euo pipefail
 
 : "${VM_DIR:?VM_DIR must point to the disposable GitHub Actions VM directory}"
+VM_DISTRO="${VM_DISTRO:?VM_DISTRO must be debian or ubuntu}"
+case "$VM_DISTRO" in
+    debian | ubuntu) ;;
+    *) echo "Unsupported VM distribution: $VM_DISTRO" >&2; exit 1 ;;
+esac
+
 SSH_OPTIONS=(-i "$VM_DIR/id_ed25519" -o BatchMode=yes -o StrictHostKeyChecking=accept-new
     -o "UserKnownHostsFile=$VM_DIR/known_hosts" -o ConnectTimeout=3
     -o ServerAliveInterval=15 -o ServerAliveCountMax=8)
 
 guest_ssh() {
-    ssh "${SSH_OPTIONS[@]}" -p 2222 debian@127.0.0.1 "$@"
+    ssh "${SSH_OPTIONS[@]}" -p 2222 "$VM_DISTRO@127.0.0.1" "$@"
 }
 
 wait_for_ssh() {
@@ -22,30 +28,44 @@ wait_for_ssh() {
         fi
         sleep 3
     done
-    echo "Timed out waiting for Debian SSH/cloud-init." >&2
+    echo "Timed out waiting for $VM_DISTRO SSH/cloud-init." >&2
     tail -n 100 "$VM_DIR/logs/serial.log" >&2 || true
     return 1
 }
 
 case "${1:-}" in
     start)
-        : "${DEBIAN_VERSION:?Missing Debian version}"
-        : "${DEBIAN_CODENAME:?Missing Debian codename}"
-        [[ "$DEBIAN_VERSION" =~ ^[0-9]+$ && "$DEBIAN_CODENAME" =~ ^[a-z][a-z0-9]*$ ]]
+        : "${OS_VERSION:?Missing OS version}"
+        : "${OS_CODENAME:?Missing OS codename}"
+        [[ "$OS_VERSION" =~ ^[0-9]+(\.[0-9]+)?$ && "$OS_CODENAME" =~ ^[a-z][a-z0-9]*$ ]]
         mkdir -p "$VM_DIR/logs"
         # QEMU runs as root; keep the serial log owned by the Actions runner.
         install -m 0600 /dev/null "$VM_DIR/logs/serial.log"
         ssh-keygen -q -t ed25519 -N '' -f "$VM_DIR/id_ed25519"
         public_key="$(cat "$VM_DIR/id_ed25519.pub")"
+        firmware_args=()
+        case "$VM_DISTRO" in
+            debian)
+                image_url="https://cloud.debian.org/images/cloud/$OS_CODENAME/latest/debian-$OS_VERSION-genericcloud-amd64.qcow2"
+                ;;
+            ubuntu)
+                image_url="https://cloud-images.ubuntu.com/$OS_CODENAME/current/$OS_CODENAME-server-cloudimg-amd64.img"
+                cp /usr/share/OVMF/OVMF_VARS_4M.fd "$VM_DIR/OVMF_VARS.fd"
+                firmware_args=(
+                    -machine q35
+                    -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd
+                    -drive "if=pflash,format=raw,file=$VM_DIR/OVMF_VARS.fd"
+                )
+                ;;
+        esac
         curl --fail --show-error --location --retry 3 --max-time 600 \
-            "https://cloud.debian.org/images/cloud/$DEBIAN_CODENAME/latest/debian-$DEBIAN_VERSION-genericcloud-amd64.qcow2" \
-            --output "$VM_DIR/disk.qcow2"
+            "$image_url" --output "$VM_DIR/disk.qcow2"
         qemu-img resize "$VM_DIR/disk.qcow2" 16G
         cat > "$VM_DIR/user-data" <<EOF
 #cloud-config
 hostname: linux-init-ci
 users:
-  - name: debian
+  - name: $VM_DISTRO
     groups: [sudo]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
@@ -78,7 +98,7 @@ EOF
         else
             accelerator=(-accel tcg,thread=multi -cpu max)
         fi
-        sudo qemu-system-x86_64 "${accelerator[@]}" -m 3072 -smp 2 \
+        sudo qemu-system-x86_64 "${accelerator[@]}" "${firmware_args[@]}" -m 3072 -smp 2 \
             -drive "file=$VM_DIR/disk.qcow2,if=virtio,format=qcow2" \
             -drive "file=$VM_DIR/seed.img,if=virtio,format=raw,readonly=on" \
             -netdev user,id=network,hostfwd=tcp:127.0.0.1:2222-:2222,hostfwd=tcp:127.0.0.1:2200-:2200 \
@@ -87,8 +107,8 @@ EOF
         wait_for_ssh
         ;;
     copy)
-        tar -czf "$VM_DIR/source.tar.gz" debian
-        scp "${SSH_OPTIONS[@]}" -P 2222 "$VM_DIR/source.tar.gz" debian@127.0.0.1:/tmp/linux-init-source.tar.gz
+        tar -czf "$VM_DIR/source.tar.gz" "$VM_DISTRO" config_files
+        scp "${SSH_OPTIONS[@]}" -P 2222 "$VM_DIR/source.tar.gz" "$VM_DISTRO@127.0.0.1":/tmp/linux-init-source.tar.gz
         guest_ssh 'sudo mkdir -p /opt/linux-init && sudo tar -xzf /tmp/linux-init-source.tar.gz -C /opt/linux-init'
         ;;
     exec)
@@ -97,7 +117,7 @@ EOF
         ;;
     exec-secondary)
         shift
-        ssh "${SSH_OPTIONS[@]}" -p 2200 debian@127.0.0.1 "$@"
+        ssh "${SSH_OPTIONS[@]}" -p 2200 "$VM_DISTRO@127.0.0.1" "$@"
         ;;
     reboot)
         previous_boot="$(guest_ssh cat /proc/sys/kernel/random/boot_id)"

@@ -3,7 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly SCRIPT_DIR
+CONFIG_DIR="$SCRIPT_DIR/../config_files"
+readonly SCRIPT_DIR CONFIG_DIR
 
 SSH_PORT_SET=false
 SSH_PORTS=()
@@ -229,8 +230,8 @@ check_install_options() {
     fi
 
     if [[ "$INSTALL_CADDY" == true ]]; then
-        [[ -f "$SCRIPT_DIR/config_files/caddy.service" ]] ||
-            die "Missing config_files/caddy.service."
+        [[ -f "$CONFIG_DIR/caddy.service" ]] ||
+            die "Missing shared Caddy service: $CONFIG_DIR/caddy.service"
         architecture="$(dpkg --print-architecture)"
         case "$architecture" in
             amd64) CADDY_ARCH=amd64 ;;
@@ -494,7 +495,7 @@ install_caddy() {
     fi
 
     mv -f -- "$CADDY_TEMP_DIR/caddy" /usr/bin/caddy
-    install -m 0644 "$SCRIPT_DIR/config_files/caddy.service" \
+    install -m 0644 "$CONFIG_DIR/caddy.service" \
         /etc/systemd/system/caddy.service
     systemctl daemon-reload
     systemctl enable caddy
