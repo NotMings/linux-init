@@ -33,6 +33,8 @@ case "${1:-}" in
         : "${DEBIAN_CODENAME:?Missing Debian codename}"
         [[ "$DEBIAN_VERSION" =~ ^[0-9]+$ && "$DEBIAN_CODENAME" =~ ^[a-z][a-z0-9]*$ ]]
         mkdir -p "$VM_DIR/logs"
+        # QEMU runs as root; keep the serial log owned by the Actions runner.
+        install -m 0600 /dev/null "$VM_DIR/logs/serial.log"
         ssh-keygen -q -t ed25519 -N '' -f "$VM_DIR/id_ed25519"
         public_key="$(cat "$VM_DIR/id_ed25519.pub")"
         curl --fail --show-error --location --retry 3 --max-time 600 \
@@ -106,6 +108,11 @@ EOF
         ;;
     logs)
         mkdir -p "$VM_DIR/logs"
+        # Also handle logs created by QEMU before a startup failure.
+        if [[ -f "$VM_DIR/logs/serial.log" ]]; then
+            sudo chown -- "$(id -u):$(id -g)" "$VM_DIR/logs/serial.log"
+            chmod 0600 "$VM_DIR/logs/serial.log"
+        fi
         if [[ -f "$VM_DIR/id_ed25519" ]]; then
             guest_ssh 'sudo journalctl --no-pager -b; sudo systemctl --failed --no-pager; sudo cat /var/log/apt/term.log' \
                 > "$VM_DIR/logs/guest.log" 2>&1 || true
@@ -113,7 +120,7 @@ EOF
         ;;
     stop)
         if [[ -f "$VM_DIR/qemu.pid" ]]; then
-            sudo kill "$(cat "$VM_DIR/qemu.pid")" || true
+            sudo kill "$(sudo cat "$VM_DIR/qemu.pid")" || true
         fi
         ;;
     *)
