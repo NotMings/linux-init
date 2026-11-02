@@ -69,21 +69,9 @@ write_ssh_ports() {
     done
 }
 
-apply_ssh_listeners() {
-    if [[ "$1" == true ]]; then
-        # The service must receive the new socket descriptors; existing sessions
-        # are preserved by the packaged ssh.service KillMode=process setting.
-        systemctl stop ssh.service ssh.socket &&
-            systemctl start ssh.socket &&
-            systemctl start ssh.service
-    else
-        systemctl reload-or-restart ssh.service
-    fi
-}
-
 configure_ssh() {
-    local sshd_bin backup_dir file config expected actual attempt main_pid
-    local socket_active=false socket_enabled=false success=false
+    local sshd_bin backup_dir file config expected actual
+    local socket_active=false socket_enabled=false
 
     sshd_bin="$(command -v sshd || true)"
     if [[ -z "$sshd_bin" && -x /usr/sbin/sshd ]]; then
@@ -94,8 +82,6 @@ configure_ssh() {
     "$sshd_bin" -t || die "Existing SSH configuration is invalid; no ports were changed."
     if systemctl is-active --quiet ssh.socket; then
         socket_active=true
-        [[ "$(systemctl show ssh.service --property=KillMode --value)" == process ]] ||
-            die "Socket port changes require ssh.service KillMode=process to preserve existing sessions."
     fi
     if systemctl is-enabled --quiet ssh.socket; then
         socket_enabled=true
@@ -138,29 +124,6 @@ configure_ssh() {
             die "Cannot configure ssh.socket; SSH configuration restored from $backup_dir."
         fi
     fi
-    if systemctl daemon-reload && apply_ssh_listeners "$socket_active"; then
-        # A service reload may finish before sshd has rebound its listening sockets.
-        for ((attempt = 0; attempt < 15; attempt++)); do
-            main_pid="$(systemctl show ssh.service --property=MainPID --value)" || break
-            actual="$(ss -H -ltnp | awk -v pid="$main_pid" '
-                index($0, "pid=" pid ",") {
-                    address = $4
-                    sub(/^.*:/, "", address)
-                    print address
-                }
-            ' | sort -un)" || break
-            if [[ "$actual" == "$expected" ]]; then
-                success=true
-                break
-            fi
-            sleep 1
-        done
-    fi
-    if [[ "$success" != true ]]; then
-        restore_ssh_configuration "$backup_dir"
-        systemctl daemon-reload
-        apply_ssh_listeners "$socket_active" || true
-        die "SSH did not listen on the requested ports; restored configuration from $backup_dir."
-    fi
-    echo "SSH now listens on: $SSH_PORT_LIST"
+    REBOOT_REQUIRED=true
+    echo "SSH ports configured: $SSH_PORT_LIST. Changes take effect after reboot."
 }

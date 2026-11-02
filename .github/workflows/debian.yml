@@ -5,13 +5,13 @@ on:
     paths:
       - debian/**
       - config_files/**
-      - lib/**
+      - helpers/**
       - .github/**
   pull_request:
     paths:
       - debian/**
       - config_files/**
-      - lib/**
+      - helpers/**
       - .github/**
   workflow_dispatch:
 
@@ -140,12 +140,13 @@ jobs:
       - name: Copy initialization script into Debian
         run: bash .github/scripts/linux-vm.sh copy
 
-      - name: Run default initialization and optional components
+      - name: Run default initialization and configure SSH ports
         if: matrix.scenario == 'initialize'
         run: |
           bash .github/scripts/linux-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
           cd /opt/linux-init
           export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          install -d -m 0700 /var/lib/linux-init-ci
           sha256sum /etc/ssh/sshd_config.d/99-ci-ports.conf > /tmp/original-ssh.sha256
           bash debian/init.sh
           sha256sum --check /tmp/original-ssh.sha256
@@ -171,6 +172,8 @@ jobs:
           fi
           test ! -e /etc/fail2ban/jail.d/99-linux-init.local
 
+          systemctl show ssh.service --property=MainPID --value > /var/lib/linux-init-ci/ssh-main-pid
+
           # Exercise spaces, comma-separated values, duplicate ports and repeated options.
           bash debian/init.sh --ssh 2222 52113
           /usr/sbin/sshd -t
@@ -178,13 +181,14 @@ jobs:
           actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
           test "$actual" = "$expected"
           actual="$(ss -H -ltnp | awk '/"sshd"/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
-          test "$actual" = "$expected"
+          test "$actual" = "$(printf '%s\n' 2200 2222)"
           bash debian/init.sh --ssh 2222 2200,52113,2222 --ssh 2200 --with-caddy
           /usr/sbin/sshd -t
           expected="$(printf '%s\n' 2200 2222 52113)"
           actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
           test "$actual" = "$expected"
-          sha256sum /etc/ssh/sshd_config /etc/ssh/sshd_config.d/99-ci-ports.conf > /tmp/configured-ssh.sha256
+          test "$(systemctl show ssh.service --property=MainPID --value)" = "$(cat /var/lib/linux-init-ci/ssh-main-pid)"
+          sha256sum /etc/ssh/sshd_config /etc/ssh/sshd_config.d/99-ci-ports.conf > /var/lib/linux-init-ci/configured-ssh.sha256
           for port in 80 443; do
               ufw status | grep -E "^${port}[[:space:]]+ALLOW"
           done
@@ -196,15 +200,37 @@ jobs:
           }
           CADDY
           printf 'CI_CONFIG_PRESERVED=yes\n' > /etc/caddy/.env
-          sha256sum /etc/caddy/Caddyfile /etc/caddy/.env > /tmp/caddy-config.sha256
+          sha256sum /etc/caddy/Caddyfile /etc/caddy/.env > /var/lib/linux-init-ci/caddy-config.sha256
           systemctl reload caddy
           curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1/ | grep -Fx linux-init-ok
+
+          # Updating configuration must leave the current listeners running.
+          actual="$(ss -H -ltnp | awk '/"sshd"/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
+          test "$actual" = "$(printf '%s\n' 2200 2222)"
+          GUEST
+          bash .github/scripts/linux-vm.sh exec-secondary true
+
+      - name: Reboot to apply SSH ports
+        if: matrix.scenario == 'initialize'
+        run: bash .github/scripts/linux-vm.sh reboot
+
+      - name: Verify SSH ports and install optional components
+        if: matrix.scenario == 'initialize'
+        run: |
+          bash .github/scripts/linux-vm.sh exec-port 52113 true
+          bash .github/scripts/linux-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
+          cd /opt/linux-init
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          /usr/sbin/sshd -t
+          expected="$(printf '%s\n' 2200 2222 52113)"
+          actual="$(ss -H -ltnp | awk '/"sshd"/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
+          test "$actual" = "$expected"
 
           # Reinstall using automatic SSH detection and a multi-module download.
           bash debian/init.sh --with-fail2ban --with-docker \
               --with-caddy-cloudflare --with-caddy-github.com/caddy-dns/route53
-          sha256sum --check /tmp/caddy-config.sha256
-          sha256sum --check /tmp/configured-ssh.sha256
+          sha256sum --check /var/lib/linux-init-ci/caddy-config.sha256
+          sha256sum --check /var/lib/linux-init-ci/configured-ssh.sha256
           for service in fail2ban docker caddy; do
               systemctl is-active --quiet "$service"
               systemctl is-enabled --quiet "$service"

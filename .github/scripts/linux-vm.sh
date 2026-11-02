@@ -126,7 +126,7 @@ EOF
         wait_for_ssh
         ;;
     copy)
-        tar -czf "$VM_DIR/source.tar.gz" "$VM_DISTRO" config_files lib
+        tar -czf "$VM_DIR/source.tar.gz" "$VM_DISTRO" config_files helpers
         scp "${SSH_OPTIONS[@]}" -P 2222 "$VM_DIR/source.tar.gz" "$VM_DISTRO@127.0.0.1":/tmp/linux-init-source.tar.gz
         guest_ssh 'sudo mkdir -p /opt/linux-init && sudo tar -xzf /tmp/linux-init-source.tar.gz -C /opt/linux-init'
         ;;

@@ -6,11 +6,14 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$SCRIPT_DIR/../config_files"
 readonly SCRIPT_DIR CONFIG_DIR
 
-# shellcheck source=../lib/ssh.sh
-source "$SCRIPT_DIR/../lib/ssh.sh"
+# shellcheck source=../helpers/ssh.sh
+source "$SCRIPT_DIR/../helpers/ssh.sh"
+# shellcheck source=../helpers/reboot.sh
+source "$SCRIPT_DIR/../helpers/reboot.sh"
 
 SSH_PORT_SET=false
 SSH_PORTS=()
+ACTIVE_SSH_PORTS=()
 SSH_PORT_LIST=""
 
 UPGRADE_SYSTEM=false
@@ -41,6 +44,9 @@ Options:
                             Short names select github.com/caddy-dns/MODULE.
                             Full Go package paths are also accepted after the prefix.
   -h, --help                Show this help.
+
+SSH port changes take effect after reboot. At completion, reboot is optional
+(default: no); non-interactive sessions skip the reboot prompt.
 
 Examples:
   sudo bash debian/init.sh --ssh 22 2222
@@ -389,8 +395,8 @@ install_base_packages() {
 configure_firewall() {
     local port
 
-    # Allow SSH before enabling the firewall to avoid locking out remote access.
-    for port in "${SSH_PORTS[@]}"; do
+    # Keep current ports accessible until the new SSH configuration takes effect.
+    for port in "${ACTIVE_SSH_PORTS[@]}" "${SSH_PORTS[@]}"; do
         ufw allow "$port/tcp"
     done
     if [[ "$INSTALL_CADDY" == true ]]; then
@@ -506,10 +512,18 @@ install_caddy() {
 }
 
 main() {
+    local requested_ssh_ports=()
+
     parse_arguments "$@"
     check_environment
 
-    if [[ "$SSH_PORT_SET" == false ]]; then
+    if [[ "$SSH_PORT_SET" == true ]]; then
+        requested_ssh_ports=("${SSH_PORTS[@]}")
+        SSH_PORTS=()
+        detect_ssh_ports
+        ACTIVE_SSH_PORTS=("${SSH_PORTS[@]}")
+        SSH_PORTS=("${requested_ssh_ports[@]}")
+    else
         detect_ssh_ports
     fi
     SSH_PORT_LIST="$(
@@ -542,9 +556,7 @@ main() {
     fi
 
     echo "Debian initialization completed."
-    if [[ "$REBOOT_REQUIRED" == true || -f /var/run/reboot-required ]]; then
-        echo "A reboot is required to activate the new kernel/system. Run: sudo reboot"
-    fi
+    prompt_reboot
 }
 
 trap cleanup EXIT
