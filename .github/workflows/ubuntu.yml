@@ -152,7 +152,6 @@ jobs:
         run: |
           bash .github/scripts/linux-vm.sh exec sudo bash -sexuo pipefail <<'GUEST'
           cd /opt/linux-init
-          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
           install -d -m 0700 /var/lib/linux-init-ci
           sha256sum /etc/ssh/sshd_config.d/99-ci-ports.conf > /tmp/original-ssh.sha256
           bash ubuntu/init.sh
@@ -250,7 +249,6 @@ jobs:
           bash .github/scripts/linux-vm.sh exec-port 52113 true
           bash .github/scripts/linux-vm.sh exec sudo bash -sexuo pipefail <<'GUEST'
           cd /opt/linux-init
-          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
           /usr/sbin/sshd -t
           expected="$(printf '%s\n' 2200 2222 52113)"
           actual="$(ss -H -ltnp | awk '/"sshd"|"systemd",pid=1,/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
@@ -284,9 +282,11 @@ jobs:
         if: matrix.scenario == 'upgrade'
         run: |
           bash .github/scripts/linux-vm.sh exec sudo bash -sexuo pipefail <<'GUEST'
-          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l UCF_FORCE_CONFFOLD=1
           apt-get -o APT::Update::Error-Mode=any update
-          apt-get -o APT::Get::Always-Include-Phased-Updates=true dist-upgrade -y
+          apt-get -o APT::Get::Always-Include-Phased-Updates=true \
+              -o Dpkg::Options::=--force-confdef \
+              -o Dpkg::Options::=--force-confold dist-upgrade -y
           GUEST
           bash .github/scripts/linux-vm.sh reboot
 
@@ -295,7 +295,6 @@ jobs:
         run: |
           bash .github/scripts/linux-vm.sh exec sudo bash -sexuo pipefail <<'GUEST'
           cd /opt/linux-init
-          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
           bash ubuntu/init.sh --upgrade-system --with-fail2ban --with-docker
           test -n "$(find /var/backups/linux-init -name package-selections.txt -print -quit)"
           test -z "$(dpkg --audit)"

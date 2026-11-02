@@ -28,6 +28,7 @@ bash ubuntu/init.sh --help
 | `--help` | 显示帮助 |
 
 - UFW 放行 SSH 端口；选择安装 Caddy 时额外放行 80 和 443 端口。
+- 软件包安装、升级使用非交互模式，配置文件冲突优先保留现有文件；`needrestart` 仅报告待重启服务。
 - 指定 `--ssh` 时在原位置替换有效或注释的 `Port` 配置，全部不存在时才补充；修改前备份并校验，兼容 `ssh.socket`，重启后生效，同时放行当前端口。两套脚本共用 `helpers/ssh.sh`。
 - 脚本结束时询问是否重启，默认不重启；非交互环境跳过询问，由调用方安排重启。重启逻辑共用 `helpers/reboot.sh`。
 - Debian 12 起支持相邻大版本升级。Ubuntu 使用官方 `do-release-upgrade`：LTS 升到下一版 LTS，普通版沿正常升级路径前进；当前版本更新要求重启时，需先重启再重跑。

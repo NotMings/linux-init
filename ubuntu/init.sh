@@ -10,6 +10,8 @@ readonly SCRIPT_DIR CONFIG_DIR
 source "$SCRIPT_DIR/../helpers/ssh.sh"
 # shellcheck source=../helpers/reboot.sh
 source "$SCRIPT_DIR/../helpers/reboot.sh"
+# shellcheck source=../helpers/packages.sh
+source "$SCRIPT_DIR/../helpers/packages.sh"
 
 SSH_PORT_SET=false
 SSH_PORTS=()
@@ -324,8 +326,8 @@ upgrade_system() {
     fi
     echo "Upgrade configuration backup: $UPGRADE_BACKUP_DIR"
 
-    apt-get -o APT::Update::Error-Mode=any update
-    apt-get install -y ca-certificates curl update-manager-core ubuntu-release-upgrader-core
+    apt_get -o APT::Update::Error-Mode=any update
+    apt_get install -y ca-certificates curl update-manager-core ubuntu-release-upgrader-core
 
     # Follow Ubuntu's supported upgrade channel; never request a development release.
     channel=normal
@@ -365,7 +367,7 @@ upgrade_system() {
     fi
 
     # Complete phased updates too, as required by the official release upgrader.
-    apt-get -o APT::Get::Always-Include-Phased-Updates=true dist-upgrade -y
+    apt_get -o APT::Get::Always-Include-Phased-Updates=true dist-upgrade -y
     if [[ -f /var/run/reboot-required ]]; then
         die "Current-release updates require a reboot. Run sudo reboot, then rerun --upgrade-system."
     fi
@@ -389,9 +391,9 @@ upgrade_system() {
 }
 
 install_base_packages() {
-    apt-get update
-    apt-get upgrade -y
-    apt-get install -y ufw iproute2 ca-certificates curl
+    apt_get update
+    apt_get upgrade -y
+    apt_get install -y ufw iproute2 ca-certificates curl
 }
 
 configure_firewall() {
@@ -408,7 +410,7 @@ configure_firewall() {
 }
 
 install_fail2ban() {
-    apt-get install -y fail2ban python3-systemd iptables
+    apt_get install -y fail2ban python3-systemd iptables
 
     # Use a separate jail file to preserve existing Fail2ban configuration.
     install -d -m 0755 /etc/fail2ban/jail.d
@@ -442,8 +444,8 @@ install_docker() {
         "$(dpkg --print-architecture)" /etc/apt/keyrings/docker.asc \
         https://download.docker.com/linux/ubuntu "$VERSION_CODENAME" \
         > /etc/apt/sources.list.d/docker.list
-    apt-get update
-    apt-get install -y \
+    apt_get update
+    apt_get install -y \
         docker-ce \
         docker-ce-cli \
         containerd.io \
@@ -518,6 +520,7 @@ main() {
 
     parse_arguments "$@"
     check_environment
+    configure_package_manager
 
     if [[ "$SSH_PORT_SET" == true ]]; then
         requested_ssh_ports=("${SSH_PORTS[@]}")

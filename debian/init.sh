@@ -10,6 +10,8 @@ readonly SCRIPT_DIR CONFIG_DIR
 source "$SCRIPT_DIR/../helpers/ssh.sh"
 # shellcheck source=../helpers/reboot.sh
 source "$SCRIPT_DIR/../helpers/reboot.sh"
+# shellcheck source=../helpers/packages.sh
+source "$SCRIPT_DIR/../helpers/packages.sh"
 
 SSH_PORT_SET=false
 SSH_PORTS=()
@@ -325,8 +327,8 @@ upgrade_system() {
         -o Dir::Etc::sourceparts=-
         -o APT::Update::Error-Mode=any
     )
-    apt-get "${current_apt_options[@]}" update
-    apt-get "${current_apt_options[@]}" install -y ca-certificates curl debian-archive-keyring
+    apt_get "${current_apt_options[@]}" update
+    apt_get "${current_apt_options[@]}" install -y ca-certificates curl debian-archive-keyring
     curl --fail --show-error --location \
         --retry 3 --connect-timeout 15 --max-time 60 \
         https://deb.debian.org/debian/dists/stable/Release \
@@ -356,8 +358,8 @@ upgrade_system() {
 
     echo "Upgrading Debian $current_major ($VERSION_CODENAME) to $target_version ($target_codename)."
     # Finish updates to the old release before changing any persistent sources.
-    apt-get "${current_apt_options[@]}" upgrade -y
-    apt-get "${current_apt_options[@]}" dist-upgrade -y
+    apt_get "${current_apt_options[@]}" upgrade -y
+    apt_get "${current_apt_options[@]}" dist-upgrade -y
 
     # Keep third-party and old-release sources disabled; do not blindly retarget them.
     install -d -m 0755 /etc/apt/sources.list.d
@@ -370,11 +372,11 @@ upgrade_system() {
         mv -- "$source_file" "$UPGRADE_BACKUP_DIR/disabled-sources.list.d/"
     done
     write_debian_sources /etc/apt/sources.list.d/debian.sources "$target_codename"
-    apt-get -o APT::Update::Error-Mode=any update
+    apt_get -o APT::Update::Error-Mode=any update
 
     # apt-get upgrade is the minimal upgrade (it does not install new packages).
-    apt-get -o APT::Get::Upgrade-Allow-New=false upgrade -y
-    apt-get dist-upgrade -y
+    apt_get -o APT::Get::Upgrade-Allow-New=false upgrade -y
+    apt_get dist-upgrade -y
     audit="$(dpkg --audit)"
     [[ -z "$audit" ]] || die "Release upgrade left dpkg errors: $audit"
 
@@ -387,9 +389,9 @@ upgrade_system() {
 }
 
 install_base_packages() {
-    apt-get update
-    apt-get upgrade -y
-    apt-get install -y ufw iproute2 ca-certificates curl
+    apt_get update
+    apt_get upgrade -y
+    apt_get install -y ufw iproute2 ca-certificates curl
 }
 
 configure_firewall() {
@@ -406,7 +408,7 @@ configure_firewall() {
 }
 
 install_fail2ban() {
-    apt-get install -y fail2ban python3-systemd iptables
+    apt_get install -y fail2ban python3-systemd iptables
 
     # Use a separate jail file to preserve existing Fail2ban configuration.
     install -d -m 0755 /etc/fail2ban/jail.d
@@ -440,8 +442,8 @@ install_docker() {
         "$(dpkg --print-architecture)" /etc/apt/keyrings/docker.asc \
         https://download.docker.com/linux/debian "$VERSION_CODENAME" \
         > /etc/apt/sources.list.d/docker.list
-    apt-get update
-    apt-get install -y \
+    apt_get update
+    apt_get install -y \
         docker-ce \
         docker-ce-cli \
         containerd.io \
@@ -516,6 +518,7 @@ main() {
 
     parse_arguments "$@"
     check_environment
+    configure_package_manager
 
     if [[ "$SSH_PORT_SET" == true ]]; then
         requested_ssh_ports=("${SSH_PORTS[@]}")

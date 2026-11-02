@@ -94,12 +94,6 @@ write_files:
     content: |
       Port 2222
       Port 2200
-  - path: /etc/apt/apt.conf.d/99-ci-noninteractive
-    content: |
-      Dpkg::Options {
-        "--force-confdef";
-        "--force-confold";
-      };
   - path: /etc/systemd/system/ssh.socket.d/00-ci-ports.conf
     content: |
       [Socket]
