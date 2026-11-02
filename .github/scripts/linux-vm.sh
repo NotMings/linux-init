@@ -92,18 +92,24 @@ write_files:
     content: |
       [Socket]
       ListenStream=
-      ListenStream=2222
-      ListenStream=2200
-      BindIPv6Only=both
+      ListenStream=0.0.0.0:2222
+      ListenStream=[::]:2222
+      ListenStream=0.0.0.0:2200
+      ListenStream=[::]:2200
+      BindIPv6Only=ipv6-only
 runcmd:
   - |
     set -e
     systemctl daemon-reload
     if [ "$VM_DISTRO" = ubuntu ] && systemctl cat ssh.socket >/dev/null 2>&1; then
         systemctl stop ssh.service ssh.socket
+        systemctl disable ssh.service
         systemctl enable ssh.socket
-        systemctl start ssh.socket
-        systemctl start ssh.service
+        systemctl start ssh.socket || {
+            systemctl status --no-pager --full ssh.socket ssh.service || true
+            journalctl --no-pager -b -u ssh.socket -u ssh.service -n 100 || true
+            exit 1
+        }
     else
         systemctl disable --now ssh.socket 2>/dev/null || true
         systemctl enable ssh
@@ -160,8 +166,14 @@ EOF
             chmod 0600 "$VM_DIR/logs/serial.log"
         fi
         if [[ -f "$VM_DIR/id_ed25519" ]]; then
-            guest_ssh 'sudo journalctl --no-pager -b; sudo systemctl --failed --no-pager; sudo cat /var/log/apt/term.log' \
-                > "$VM_DIR/logs/guest.log" 2>&1 || true
+            guest_ssh '
+                sudo ss -ltnp
+                sudo systemctl status --no-pager --full ssh.service ssh.socket
+                sudo systemctl cat ssh.service ssh.socket
+                sudo journalctl --no-pager -b
+                sudo systemctl --failed --no-pager
+                sudo cat /var/log/apt/term.log
+            ' > "$VM_DIR/logs/guest.log" 2>&1 || true
         fi
         ;;
     stop)
