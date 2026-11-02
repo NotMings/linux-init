@@ -389,8 +389,10 @@ configure_firewall() {
     for port in "${SSH_PORTS[@]}"; do
         ufw allow "$port/tcp"
     done
-    ufw allow 80
-    ufw allow 443
+    if [[ "$INSTALL_CADDY" == true ]]; then
+        ufw allow 80
+        ufw allow 443
+    fi
     ufw --force enable
 }
 

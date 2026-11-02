@@ -26,7 +26,7 @@ bash debian/init.sh --help
 | `--witch-caddy-MODULE` | 下载带模块的 Caddy，可重复传入；短名称对应 `github.com/caddy-dns/MODULE`，也支持完整包路径 |
 | `--help` | 显示帮助 |
 
-- UFW 放行 SSH、80 和 443 端口。
+- UFW 放行 SSH 端口；选择安装 Caddy 时额外放行 80 和 443 端口。
 - 升级前备份业务数据。APT 配置备份至 `/var/backups/linux-init/`，旧软件源及第三方源会停用，完成后需手动重启。
 - Caddy 配置位于 `/etc/caddy/Caddyfile`，环境变量位于 `/etc/caddy/.env`；重复执行保留配置，重新安装时需指定全部额外模块。
 

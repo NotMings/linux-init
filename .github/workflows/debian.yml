@@ -146,6 +146,12 @@ jobs:
           for port in 2222 2200; do
               ufw status | grep -E "^${port}/tcp[[:space:]]+ALLOW"
           done
+          for port in 80 443; do
+              if ufw status | grep -E "^${port}(/(tcp|udp))?[[:space:]]+.*ALLOW"; then
+                  echo "Unexpected default firewall rule for port $port" >&2
+                  exit 1
+              fi
+          done
           for package in fail2ban docker-ce; do
               if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
                   echo "Unexpected default installation: $package" >&2
@@ -160,6 +166,9 @@ jobs:
 
           # Exercise spaces, comma-separated values, duplicate ports and repeated options.
           bash debian/init.sh --ssh 2222 2200,2222 --ssh 2200 --with-caddy
+          for port in 80 443; do
+              ufw status | grep -E "^${port}[[:space:]]+ALLOW"
+          done
           systemctl is-active --quiet caddy
           caddy version
           cat > /etc/caddy/Caddyfile <<'CADDY'
