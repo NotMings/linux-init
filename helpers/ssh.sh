@@ -17,51 +17,65 @@ restore_ssh_configuration() {
 }
 
 write_ssh_ports() {
-    local backup_dir="$1" file is_main
+    local backup_dir="$1" file port_file="" write_here port_mode=active
+
+    # Prefer active settings, then an existing commented Port directive.
+    for file in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+        [[ -f "$file" ]] || continue
+        if grep -qiE '^[[:space:]]*Port([[:space:]]|=)' "$file"; then
+            port_file="$file"
+            break
+        fi
+    done
+    if [[ -z "$port_file" ]]; then
+        port_mode=commented
+        for file in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
+            [[ -f "$file" ]] || continue
+            if grep -qiE '^[[:space:]]*#[[:space:]]*Port[[:space:]=]+[0-9]+([[:space:]#]|$)' "$file"; then
+                port_file="$file"
+                break
+            fi
+        done
+    fi
+    if [[ -z "$port_file" ]]; then
+        port_file=/etc/ssh/sshd_config
+        port_mode=missing
+    fi
 
     for file in /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf; do
         [[ -f "$file" ]] || continue
-        is_main=false
-        [[ "$file" != /etc/ssh/sshd_config ]] || is_main=true
-        awk -v ports="${SSH_PORTS[*]}" -v is_main="$is_main" '
-            BEGIN {
-                if (is_main == "true") {
-                    print "# BEGIN linux-init SSH ports"
-                    count = split(ports, values, " ")
-                    for (i = 1; i <= count; i++) print "Port " values[i]
-                    print "# END linux-init SSH ports"
-                }
+        write_here=false
+        [[ "$file" != "$port_file" ]] || write_here=true
+        awk -v ports="${SSH_PORTS[*]}" -v write_here="$write_here" \
+            -v port_mode="$port_mode" '
+            BEGIN { count = split(ports, values, " ") }
+            function write_ports() {
+                for (i = 1; i <= count; i++) print "Port " values[i]
+                written = 1
             }
-            is_main == "true" && $0 == "# BEGIN linux-init SSH ports" { skip = 1; next }
-            is_main == "true" && $0 == "# END linux-init SSH ports" { skip = 0; next }
-            skip { next }
+            $0 == "# BEGIN linux-init SSH ports" || $0 == "# END linux-init SSH ports" { next }
             {
                 line = $0
                 sub(/^[[:space:]]+/, "", line)
+                commented = sub(/^#[[:space:]]*/, "", line)
+                sub(/#.*/, "", line)
                 split(line, fields, /[[:space:]=]+/)
                 key = tolower(fields[1])
-                if (key == "port") {
-                    print "# linux-init disabled: " $0
+                if (key == "port" && (!commented ||
+                    (write_here == "true" && port_mode == "commented" && fields[2] ~ /^[0-9]+$/))) {
+                    if (write_here == "true" && !written) write_ports()
                     next
                 }
-                if (key == "listenaddress") {
-                    # Preserve interface bindings, applying all requested Port directives.
-                    original = fields[2]
-                    address = original
-                    if (address ~ /^\[[^]]+\]:[0-9]+$/) {
-                        sub(/^\[/, "", address)
-                        sub(/\]:[0-9]+$/, "", address)
-                    } else if (address ~ /^[^:]+:[0-9]+$/) {
-                        sub(/:[0-9]+$/, "", address)
-                    }
-                    offset = index($0, original)
-                    if (offset && address != original) {
-                        $0 = substr($0, 1, offset - 1) address substr($0, offset + length(original))
-                    }
-                }
+                # A fallback Port setting must remain outside Match blocks.
+                if (write_here == "true" && port_mode == "missing" && !written && !commented && key == "match") write_ports()
                 print
             }
-            END { if (skip) exit 1 }
+            END {
+                if (write_here == "true" && !written) {
+                    if (port_mode != "missing") exit 1
+                    write_ports()
+                }
+            }
         ' "$file" > "$backup_dir/updated" &&
             chmod --reference="$file" "$backup_dir/updated" &&
             chown --reference="$file" "$backup_dir/updated" &&
@@ -112,7 +126,7 @@ configure_ssh() {
     ' <<< "$config" | sort -un)"
     if [[ "$actual" != "$expected" ]]; then
         restore_ssh_configuration "$backup_dir"
-        die "Other SSH includes override the requested ports; configuration restored from $backup_dir."
+        die "Effective SSH ports differ from the requested ports; check ListenAddress or additional includes. Configuration restored from $backup_dir."
     fi
 
     if [[ "$socket_active" == true || "$socket_enabled" == true ]]; then

@@ -174,19 +174,41 @@ jobs:
 
           systemctl show ssh.service --property=MainPID --value > /var/lib/linux-init-ci/ssh-main-pid
 
+          # Replace a commented Port in place, preserving its surrounding lines.
+          sed -i -E '/^[[:space:]]*#?[[:space:]]*[Pp][Oo][Rr][Tt]([[:space:]]|=)/d' \
+              /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf
+          printf '# Before SSH ports\n#Port 22\n# After SSH ports\n' > /etc/ssh/sshd_config.d/99-ci-ports.conf
+
           # Exercise spaces, comma-separated values, duplicate ports and repeated options.
           bash debian/init.sh --ssh 2222 52113
+          diff -u <(printf '# Before SSH ports\nPort 2222\nPort 52113\n# After SSH ports\n') \
+              /etc/ssh/sshd_config.d/99-ci-ports.conf
           /usr/sbin/sshd -t
           expected="$(printf '%s\n' 2222 52113)"
           actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
           test "$actual" = "$expected"
           actual="$(ss -H -ltnp | awk '/"sshd"/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
           test "$actual" = "$(printf '%s\n' 2200 2222)"
+          # Prefer active directives over commented templates elsewhere.
+          printf '\n#Port 2022\n' >> /etc/ssh/sshd_config
           bash debian/init.sh --ssh 2222 2200,52113,2222 --ssh 2200 --with-caddy
+          diff -u <(printf '# Before SSH ports\nPort 2222\nPort 2200\nPort 52113\n# After SSH ports\n') \
+              /etc/ssh/sshd_config.d/99-ci-ports.conf
           /usr/sbin/sshd -t
           expected="$(printf '%s\n' 2200 2222 52113)"
           actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
           test "$actual" = "$expected"
+
+          # Add global Port directives only when no active or commented setting exists.
+          sed -i -E '/^[[:space:]]*#?[[:space:]]*[Pp][Oo][Rr][Tt]([[:space:]]|=)/d' \
+              /etc/ssh/sshd_config /etc/ssh/sshd_config.d/*.conf
+          printf '\nMatch all\n    X11Forwarding no\n' >> /etc/ssh/sshd_config
+          bash debian/init.sh --ssh 2222 2200 52113
+          /usr/sbin/sshd -t
+          actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
+          test "$actual" = "$expected"
+          diff -u <(printf 'Port 2222\nPort 2200\nPort 52113\n') \
+              <(grep '^Port ' /etc/ssh/sshd_config)
           test "$(systemctl show ssh.service --property=MainPID --value)" = "$(cat /var/lib/linux-init-ci/ssh-main-pid)"
           sha256sum /etc/ssh/sshd_config /etc/ssh/sshd_config.d/99-ci-ports.conf > /var/lib/linux-init-ci/configured-ssh.sha256
           for port in 80 443; do
