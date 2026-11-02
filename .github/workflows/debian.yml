@@ -1,0 +1,245 @@
+name: Debian initialization
+
+on:
+  push:
+    paths:
+      - debian/**
+      - .github/**
+  pull_request:
+    paths:
+      - debian/**
+      - .github/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  supported-releases:
+    name: Find supported Debian releases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.releases.outputs.matrix }}
+    steps:
+      - name: Read official Debian support dates
+        id: releases
+        shell: bash
+        run: |
+          curl --fail --show-error --location --retry 3 --max-time 60 \
+            https://www.debian.org/releases/ --output "$RUNNER_TEMP/debian-releases.html"
+          python3 <<'PY'
+          import datetime
+          from html.parser import HTMLParser
+          import json
+          import os
+          from pathlib import Path
+          import re
+
+          class ReleaseTable(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.rows = []
+                  self.row = []
+                  self.cell = None
+
+              def handle_starttag(self, tag, attrs):
+                  if tag == "tr":
+                      self.row = []
+                  elif tag in ("td", "th"):
+                      self.cell = []
+
+              def handle_data(self, data):
+                  if self.cell is not None:
+                      self.cell.append(data)
+
+              def handle_endtag(self, tag):
+                  if tag in ("td", "th") and self.cell is not None:
+                      self.row.append(" ".join("".join(self.cell).split()))
+                      self.cell = None
+                  elif tag == "tr":
+                      self.rows.append(self.row)
+
+          table = ReleaseTable()
+          table.feed((Path(os.environ["RUNNER_TEMP"]) / "debian-releases.html").read_text())
+          today = datetime.datetime.now(datetime.timezone.utc).date()
+          supported = {}
+          for row in table.rows:
+              if len(row) < 5 or not row[0].isdigit():
+                  continue
+              try:
+                  released = datetime.date.fromisoformat(row[2])
+                  # Columns 3 and 4 are normal security support and Debian LTS.
+                  # Column 5 is third-party ELTS and is deliberately excluded.
+                  ends = [datetime.date.fromisoformat(value) for value in row[3:5]
+                          if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)]
+              except ValueError:
+                  continue
+              if not ends or not released <= today <= max(ends):
+                  continue
+              codename = row[1].lower()
+              if not re.fullmatch(r"[a-z][a-z0-9]*", codename):
+                  raise SystemExit(f"Unexpected Debian codename: {codename!r}")
+              supported[int(row[0])] = {"version": row[0], "codename": codename,
+                                         "support_end": max(ends).isoformat()}
+          if not supported:
+              raise SystemExit("No supported Debian releases found; check the official table format.")
+          latest = max(supported)
+          include = [dict(supported[version], scenario="initialize", target="")
+                     for version in sorted(supported)]
+          if latest - 1 in supported and latest - 1 >= 12:
+              include.append(dict(supported[latest - 1], scenario="upgrade", target=str(latest)))
+          matrix = json.dumps({"include": include}, separators=(",", ":"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"matrix={matrix}\n")
+          print(json.dumps(include, indent=2))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("Debian official security support or LTS only; third-party ELTS excluded.\n\n")
+              for release in include:
+                  summary.write(f"- Debian {release['version']} ({release['codename']}), "
+                                f"supported through {release['support_end']}: {release['scenario']}\n")
+          PY
+
+  run-script:
+    name: Debian ${{ matrix.version }} / ${{ matrix.scenario }}
+    needs: supported-releases
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.supported-releases.outputs.matrix) }}
+    env:
+      DEBIAN_VERSION: ${{ matrix.version }}
+      DEBIAN_CODENAME: ${{ matrix.codename }}
+      UPGRADE_TARGET: ${{ matrix.target }}
+    steps:
+      - name: Set virtual machine directory
+        run: printf 'VM_DIR=%s/debian-vm\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install virtual machine tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
+
+      - name: Boot official Debian cloud image
+        run: bash .github/scripts/debian-vm.sh start
+
+      - name: Copy initialization script into Debian
+        run: bash .github/scripts/debian-vm.sh copy
+
+      - name: Run default initialization and optional components
+        if: matrix.scenario == 'initialize'
+        run: |
+          bash .github/scripts/debian-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
+          cd /opt/linux-init
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          bash debian/init.sh
+          ufw status | grep -F 'Status: active'
+          for port in 2222 2200; do
+              ufw status | grep -E "^${port}/tcp[[:space:]]+ALLOW"
+          done
+          for package in fail2ban docker-ce; do
+              if dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -qx 'install ok installed'; then
+                  echo "Unexpected default installation: $package" >&2
+                  exit 1
+              fi
+          done
+          if command -v caddy; then
+              echo "Unexpected default installation: caddy" >&2
+              exit 1
+          fi
+          test ! -e /etc/fail2ban/jail.d/99-linux-init.local
+
+          # Exercise spaces, comma-separated values, duplicate ports and repeated options.
+          bash debian/init.sh --ssh 2222 2200,2222 --ssh 2200 --with-caddy
+          systemctl is-active --quiet caddy
+          caddy version
+          cat > /etc/caddy/Caddyfile <<'CADDY'
+          :80 {
+              respond "linux-init-ok"
+          }
+          CADDY
+          printf 'CI_CONFIG_PRESERVED=yes\n' > /etc/caddy/.env
+          sha256sum /etc/caddy/Caddyfile /etc/caddy/.env > /tmp/caddy-config.sha256
+          systemctl reload caddy
+          curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1/ | grep -Fx linux-init-ok
+
+          # Reinstall using automatic SSH detection and a multi-module download.
+          bash debian/init.sh --with-fail2ban --with-docker \
+              --witch-caddy-cloudflare --witch-caddy-github.com/caddy-dns/route53
+          sha256sum --check /tmp/caddy-config.sha256
+          for service in fail2ban docker caddy; do
+              systemctl is-active --quiet "$service"
+              systemctl is-enabled --quiet "$service"
+          done
+          timeout 30 bash -c 'until fail2ban-client status sshd; do sleep 1; done'
+          grep -Fx 'port = 2200,2222' /etc/fail2ban/jail.d/99-linux-init.local
+          docker info
+          docker buildx version
+          docker compose version
+          docker run --rm hello-world
+          caddy list-modules | grep -Fx dns.providers.cloudflare
+          caddy list-modules | grep -Fx dns.providers.route53
+          curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1/ | grep -Fx linux-init-ok
+          GUEST
+          # New connections on both ports must still work after UFW is enabled.
+          bash .github/scripts/debian-vm.sh exec true
+          bash .github/scripts/debian-vm.sh exec-secondary true
+
+      - name: Run release upgrade to latest stable
+        if: matrix.scenario == 'upgrade'
+        run: |
+          bash .github/scripts/debian-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
+          cd /opt/linux-init
+          export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          bash debian/init.sh --upgrade-system --with-fail2ban --with-docker
+          test -n "$(find /var/backups/linux-init -name package-selections.txt -print -quit)"
+          test -z "$(dpkg --audit)"
+          ufw status | grep -F 'Status: active'
+          for service in fail2ban docker; do
+              systemctl is-active --quiet "$service"
+          done
+          GUEST
+          bash .github/scripts/debian-vm.sh exec cat /etc/os-release | tee "$VM_DIR/logs/upgraded-os-release"
+          grep -Fx "VERSION_ID=\"$UPGRADE_TARGET\"" "$VM_DIR/logs/upgraded-os-release"
+
+      - name: Reboot and verify upgraded system
+        if: matrix.scenario == 'upgrade'
+        run: |
+          bash .github/scripts/debian-vm.sh reboot
+          bash .github/scripts/debian-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
+          uname -a
+          test -z "$(dpkg --audit)"
+          for service in ssh fail2ban docker; do
+              systemctl is-active --quiet "$service"
+          done
+          ufw status | grep -F 'Status: active'
+          timeout 30 bash -c 'until fail2ban-client status sshd; do sleep 1; done'
+          docker run --rm hello-world
+          GUEST
+          bash .github/scripts/debian-vm.sh exec-secondary true
+
+      - name: Collect system logs
+        if: always()
+        run: bash .github/scripts/debian-vm.sh logs
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-${{ matrix.version }}-${{ matrix.scenario }}
+          path: ${{ env.VM_DIR }}/logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop virtual machine
+        if: always()
+        run: bash .github/scripts/debian-vm.sh stop
