@@ -121,8 +121,8 @@ configure_ssh() {
     fi
     expected="$(printf '%s\n' "${SSH_PORTS[@]}" | sort -un)"
     actual="$(awk '
-        $1 == "port" { print $2 }
-        $1 == "listenaddress" { address = $2; sub(/^.*:/, "", address); print address }
+        tolower($1) == "port" { print $2 }
+        tolower($1) == "listenaddress" { address = $2; sub(/^.*:/, "", address); print address }
     ' <<< "$config" | sort -un)"
     if [[ "$actual" != "$expected" ]]; then
         restore_ssh_configuration "$backup_dir"
@@ -132,7 +132,7 @@ configure_ssh() {
     if [[ "$socket_active" == true || "$socket_enabled" == true ]]; then
         if ! install -d -m 0755 /etc/systemd/system/ssh.socket.d || ! {
             printf '[Socket]\nListenStream=\nBindIPv6Only=ipv6-only\n' &&
-                awk '$1 == "listenaddress" { print "ListenStream=" $2 }' <<< "$config"
+                awk 'tolower($1) == "listenaddress" { print "ListenStream=" $2 }' <<< "$config"
         } > /etc/systemd/system/ssh.socket.d/99-linux-init.conf; then
             restore_ssh_configuration "$backup_dir"
             die "Cannot configure ssh.socket; SSH configuration restored from $backup_dir."

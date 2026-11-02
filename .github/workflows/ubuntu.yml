@@ -192,7 +192,7 @@ jobs:
               /etc/ssh/sshd_config.d/99-ci-ports.conf
           /usr/sbin/sshd -t
           expected="$(printf '%s\n' 2222 52113)"
-          actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
+          actual="$(/usr/sbin/sshd -T | awk 'tolower($1) == "port" { print $2 }' | sort -un)"
           test "$actual" = "$expected"
           # ssh.socket can own the listeners in PID 1 instead of sshd.
           actual="$(ss -H -ltnp | awk '/"sshd"|"systemd",pid=1,/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
@@ -204,7 +204,7 @@ jobs:
               /etc/ssh/sshd_config.d/99-ci-ports.conf
           /usr/sbin/sshd -t
           expected="$(printf '%s\n' 2200 2222 52113)"
-          actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
+          actual="$(/usr/sbin/sshd -T | awk 'tolower($1) == "port" { print $2 }' | sort -un)"
           test "$actual" = "$expected"
 
           # Add global Port directives only when no active or commented setting exists.
@@ -213,7 +213,7 @@ jobs:
           printf '\nMatch all\n    X11Forwarding no\n' >> /etc/ssh/sshd_config
           bash ubuntu/init.sh --ssh 2222 2200 52113
           /usr/sbin/sshd -t
-          actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
+          actual="$(/usr/sbin/sshd -T | awk 'tolower($1) == "port" { print $2 }' | sort -un)"
           test "$actual" = "$expected"
           diff -u <(printf 'Port 2222\nPort 2200\nPort 52113\n') \
               <(grep '^Port ' /etc/ssh/sshd_config)

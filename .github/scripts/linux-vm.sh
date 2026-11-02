@@ -18,12 +18,24 @@ guest_ssh() {
 }
 
 wait_for_ssh() {
-    local previous_boot="${1:-}" boot deadline=$((SECONDS + 600))
+    local previous_boot="${1:-}" boot status remaining deadline=$((SECONDS + 600))
     while (( SECONDS < deadline )); do
         if boot="$(guest_ssh cat /proc/sys/kernel/random/boot_id 2>/dev/null)"; then
             if [[ -n "$boot" && "$boot" != "$previous_boot" ]]; then
-                guest_ssh sudo cloud-init status --wait
-                return 0
+                remaining=$((deadline - SECONDS))
+                (( remaining > 0 )) || break
+                if guest_ssh sudo timeout "$remaining" cloud-init status --wait; then
+                    return 0
+                else
+                    status=$?
+                fi
+                # cloud-init may switch SSH listeners after the first successful probe.
+                if [[ "$status" -ne 255 ]]; then
+                    echo "cloud-init readiness check failed (exit $status)." >&2
+                    tail -n 100 "$VM_DIR/logs/serial.log" >&2 || true
+                    return "$status"
+                fi
+                echo "SSH connection interrupted during cloud-init; retrying..." >&2
             fi
         fi
         sleep 3
@@ -168,6 +180,7 @@ EOF
         if [[ -f "$VM_DIR/id_ed25519" ]]; then
             guest_ssh '
                 sudo ss -ltnp
+                sudo /usr/sbin/sshd -T
                 sudo systemctl status --no-pager --full ssh.service ssh.socket
                 sudo systemctl cat ssh.service ssh.socket
                 sudo journalctl --no-pager -b

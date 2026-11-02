@@ -213,13 +213,13 @@ detect_ssh_ports() {
         output="$("$sshd_bin" -T)" ||
             die "Cannot read effective SSH configuration. Specify --ssh PORT."
         ports="$(awk '
-            $1 == "listenaddress" {
+            tolower($1) == "listenaddress" {
                 address = $2
                 sub(/^.*:/, "", address)
                 print address
                 found = 1
             }
-            $1 == "port" { ports = ports $2 "\n" }
+            tolower($1) == "port" { ports = ports $2 "\n" }
             END { if (!found) printf "%s", ports }
         ' <<< "$output" | sort -un)"
     fi
