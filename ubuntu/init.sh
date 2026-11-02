@@ -6,6 +6,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$SCRIPT_DIR/../config_files"
 readonly SCRIPT_DIR CONFIG_DIR
 
+# shellcheck source=../lib/ssh.sh
+source "$SCRIPT_DIR/../lib/ssh.sh"
+
 SSH_PORT_SET=false
 SSH_PORTS=()
 SSH_PORT_LIST=""
@@ -28,7 +31,7 @@ usage() {
 Usage: sudo bash ubuntu/init.sh [options]
 
 Options:
-  --ssh PORT [PORT ...]     Override detected SSH ports; does not change sshd.
+  --ssh PORT [PORT ...]     Set SSH listening ports; detect only when omitted.
                             Accepts spaces, commas and repeated --ssh options.
   --upgrade-system          Upgrade Ubuntu along its official release channel (default: false).
   --with-fail2ban           Install and configure Fail2ban (default: false).
@@ -382,7 +385,7 @@ upgrade_system() {
 install_base_packages() {
     apt-get update
     apt-get upgrade -y
-    apt-get install -y ufw ca-certificates curl
+    apt-get install -y ufw iproute2 ca-certificates curl
 }
 
 configure_firewall() {
@@ -396,7 +399,6 @@ configure_firewall() {
         ufw allow 80
         ufw allow 443
     fi
-    ufw --force enable
 }
 
 install_fail2ban() {
@@ -526,6 +528,10 @@ main() {
     fi
     install_base_packages
     configure_firewall
+    if [[ "$SSH_PORT_SET" == true ]]; then
+        configure_ssh
+    fi
+    ufw --force enable
 
     if [[ "$INSTALL_FAIL2BAN" == true ]]; then
         install_fail2ban

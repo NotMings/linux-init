@@ -5,11 +5,13 @@ on:
     paths:
       - ubuntu/**
       - config_files/**
+      - lib/**
       - .github/**
   pull_request:
     paths:
       - ubuntu/**
       - config_files/**
+      - lib/**
       - .github/**
   workflow_dispatch:
 
@@ -151,7 +153,9 @@ jobs:
           bash .github/scripts/linux-vm.sh exec sudo bash -seuo pipefail <<'GUEST'
           cd /opt/linux-init
           export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a UCF_FORCE_CONFFOLD=1
+          sha256sum /etc/ssh/sshd_config.d/99-ci-ports.conf > /tmp/original-ssh.sha256
           bash ubuntu/init.sh
+          sha256sum --check /tmp/original-ssh.sha256
           ufw status | grep -F 'Status: active'
           for port in 2222 2200; do
               ufw status | grep -E "^${port}/tcp[[:space:]]+ALLOW"
@@ -175,7 +179,19 @@ jobs:
           test ! -e /etc/fail2ban/jail.d/99-linux-init.local
 
           # Exercise spaces, comma-separated values, duplicate ports and repeated options.
-          bash ubuntu/init.sh --ssh 2222 2200,2222 --ssh 2200 --with-caddy
+          bash ubuntu/init.sh --ssh 2222 52113
+          /usr/sbin/sshd -t
+          expected="$(printf '%s\n' 2222 52113)"
+          actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
+          test "$actual" = "$expected"
+          actual="$(ss -H -ltnp | awk '/"sshd"/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
+          test "$actual" = "$expected"
+          bash ubuntu/init.sh --ssh 2222 2200,52113,2222 --ssh 2200 --with-caddy
+          /usr/sbin/sshd -t
+          expected="$(printf '%s\n' 2200 2222 52113)"
+          actual="$(/usr/sbin/sshd -T | awk '$1 == "port" { print $2 }' | sort -un)"
+          test "$actual" = "$expected"
+          sha256sum /etc/ssh/sshd_config /etc/ssh/sshd_config.d/99-ci-ports.conf > /tmp/configured-ssh.sha256
           for port in 80 443; do
               ufw status | grep -E "^${port}[[:space:]]+ALLOW"
           done
@@ -195,12 +211,13 @@ jobs:
           bash ubuntu/init.sh --with-fail2ban --with-docker \
               --with-caddy-cloudflare --with-caddy-github.com/caddy-dns/route53
           sha256sum --check /tmp/caddy-config.sha256
+          sha256sum --check /tmp/configured-ssh.sha256
           for service in fail2ban docker caddy; do
               systemctl is-active --quiet "$service"
               systemctl is-enabled --quiet "$service"
           done
           timeout 30 bash -c 'until fail2ban-client status sshd; do sleep 1; done'
-          grep -Fx 'port = 2200,2222' /etc/fail2ban/jail.d/99-linux-init.local
+          grep -Fx 'port = 2200,2222,52113' /etc/fail2ban/jail.d/99-linux-init.local
           docker info
           docker buildx version
           docker compose version
@@ -209,9 +226,10 @@ jobs:
           caddy list-modules | grep -Fx dns.providers.route53
           curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1/ | grep -Fx linux-init-ok
           GUEST
-          # New connections on both ports must still work after UFW is enabled.
+          # New connections must work on every configured SSH port.
           bash .github/scripts/linux-vm.sh exec true
           bash .github/scripts/linux-vm.sh exec-secondary true
+          bash .github/scripts/linux-vm.sh exec-port 52113 true
 
       - name: Prepare current Ubuntu release for upgrade
         if: matrix.scenario == 'upgrade'

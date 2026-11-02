@@ -88,8 +88,27 @@ write_files:
         "--force-confdef";
         "--force-confold";
       };
+  - path: /etc/systemd/system/ssh.socket.d/00-ci-ports.conf
+    content: |
+      [Socket]
+      ListenStream=
+      ListenStream=2222
+      ListenStream=2200
+      BindIPv6Only=both
 runcmd:
-  - [bash, -c, 'systemctl disable --now ssh.socket 2>/dev/null || true; systemctl enable ssh; systemctl restart ssh']
+  - |
+    set -e
+    systemctl daemon-reload
+    if [ "$VM_DISTRO" = ubuntu ] && systemctl cat ssh.socket >/dev/null 2>&1; then
+        systemctl stop ssh.service ssh.socket
+        systemctl enable ssh.socket
+        systemctl start ssh.socket
+        systemctl start ssh.service
+    else
+        systemctl disable --now ssh.socket 2>/dev/null || true
+        systemctl enable ssh
+        systemctl restart ssh
+    fi
 EOF
         printf 'instance-id: linux-init-ci\nlocal-hostname: linux-init-ci\n' > "$VM_DIR/meta-data"
         cloud-localds "$VM_DIR/seed.img" "$VM_DIR/user-data" "$VM_DIR/meta-data"
@@ -101,13 +120,13 @@ EOF
         sudo qemu-system-x86_64 "${accelerator[@]}" "${firmware_args[@]}" -m 3072 -smp 2 \
             -drive "file=$VM_DIR/disk.qcow2,if=virtio,format=qcow2" \
             -drive "file=$VM_DIR/seed.img,if=virtio,format=raw,readonly=on" \
-            -netdev user,id=network,hostfwd=tcp:127.0.0.1:2222-:2222,hostfwd=tcp:127.0.0.1:2200-:2200 \
+            -netdev user,id=network,hostfwd=tcp:127.0.0.1:2222-:2222,hostfwd=tcp:127.0.0.1:2200-:2200,hostfwd=tcp:127.0.0.1:52113-:52113 \
             -device virtio-net-pci,netdev=network -display none \
             -serial "file:$VM_DIR/logs/serial.log" -daemonize -pidfile "$VM_DIR/qemu.pid"
         wait_for_ssh
         ;;
     copy)
-        tar -czf "$VM_DIR/source.tar.gz" "$VM_DISTRO" config_files
+        tar -czf "$VM_DIR/source.tar.gz" "$VM_DISTRO" config_files lib
         scp "${SSH_OPTIONS[@]}" -P 2222 "$VM_DIR/source.tar.gz" "$VM_DISTRO@127.0.0.1":/tmp/linux-init-source.tar.gz
         guest_ssh 'sudo mkdir -p /opt/linux-init && sudo tar -xzf /tmp/linux-init-source.tar.gz -C /opt/linux-init'
         ;;
@@ -118,6 +137,13 @@ EOF
     exec-secondary)
         shift
         ssh "${SSH_OPTIONS[@]}" -p 2200 "$VM_DISTRO@127.0.0.1" "$@"
+        ;;
+    exec-port)
+        [[ $# -ge 3 && "$2" =~ ^[0-9]{1,5}$ ]]
+        port=$((10#$2))
+        (( port >= 1 && port <= 65535 ))
+        shift 2
+        ssh "${SSH_OPTIONS[@]}" -p "$port" "$VM_DISTRO@127.0.0.1" "$@"
         ;;
     reboot)
         previous_boot="$(guest_ssh cat /proc/sys/kernel/random/boot_id)"
@@ -144,7 +170,7 @@ EOF
         fi
         ;;
     *)
-        echo "Usage: $0 {start|copy|exec|exec-secondary|reboot|logs|stop}" >&2
+        echo "Usage: $0 {start|copy|exec|exec-secondary|exec-port|reboot|logs|stop}" >&2
         exit 1
         ;;
 esac
