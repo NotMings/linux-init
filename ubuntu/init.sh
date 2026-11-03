@@ -178,12 +178,14 @@ check_environment() {
 }
 
 detect_ssh_ports() {
-    local output ports="" port sshd_bin
+    local output ports="" port sshd_bin main_pid
 
-    # Prefer ports actually listened on by sshd, including command-line overrides.
-    if command -v ss > /dev/null && output="$(ss -H -ltnp 2>/dev/null)"; then
-        ports="$(awk '
-            /"sshd"/ {
+    # Session processes also listen for X11 and TCP forwarding; use only the master.
+    main_pid="$(systemctl show ssh.service --property=MainPID --value 2>/dev/null || true)"
+    if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && command -v ss > /dev/null &&
+        output="$(ss -H -ltnp 2>/dev/null)"; then
+        ports="$(awk -v pid="$main_pid" '
+            index($0, "pid=" pid ",") {
                 address = $4
                 sub(/^.*:/, "", address)
                 print address

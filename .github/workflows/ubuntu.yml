@@ -193,8 +193,8 @@ jobs:
           expected="$(printf '%s\n' 2222 52113)"
           actual="$(/usr/sbin/sshd -T | awk 'tolower($1) == "port" { print $2 }' | sort -un)"
           test "$actual" = "$expected"
-          # ssh.socket can own the listeners in PID 1 instead of sshd.
-          actual="$(ss -H -ltnp | awk '/"sshd"|"systemd",pid=1,/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
+          # Ignore session forwarding; listeners belong to the SSH master or PID 1.
+          actual="$(ss -H -ltnp | awk -v pid="$(systemctl show ssh.service --property=MainPID --value)" 'index($0, "pid=" pid ",") || /"systemd",pid=1,/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
           test "$actual" = "$(printf '%s\n' 2200 2222)"
           # Prefer active directives over commented templates elsewhere.
           printf '\n#Port 2022\n' >> /etc/ssh/sshd_config
@@ -234,7 +234,7 @@ jobs:
           curl --fail --retry 5 --retry-connrefused --retry-delay 1 http://127.0.0.1/ | grep -Fx linux-init-ok
 
           # Updating configuration must leave the current listeners running.
-          actual="$(ss -H -ltnp | awk '/"sshd"|"systemd",pid=1,/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
+          actual="$(ss -H -ltnp | awk -v pid="$(systemctl show ssh.service --property=MainPID --value)" 'index($0, "pid=" pid ",") || /"systemd",pid=1,/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
           test "$actual" = "$(printf '%s\n' 2200 2222)"
           GUEST
           bash .github/scripts/linux-vm.sh exec-secondary true
@@ -246,17 +246,25 @@ jobs:
       - name: Verify SSH ports and install optional components
         if: matrix.scenario == 'initialize'
         run: |
+          # A session-owned listener must not be mistaken for a login port.
+          bash .github/scripts/linux-vm.sh forward 6010
           bash .github/scripts/linux-vm.sh exec-port 52113 true
           bash .github/scripts/linux-vm.sh exec sudo bash -sexuo pipefail <<'GUEST'
           cd /opt/linux-init
           /usr/sbin/sshd -t
           expected="$(printf '%s\n' 2200 2222 52113)"
-          actual="$(ss -H -ltnp | awk '/"sshd"|"systemd",pid=1,/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
+          actual="$(ss -H -ltnp | awk -v pid="$(systemctl show ssh.service --property=MainPID --value)" 'index($0, "pid=" pid ",") || /"systemd",pid=1,/ { port=$4; sub(/^.*:/, "", port); print port }' | sort -un)"
           test "$actual" = "$expected"
+
+          test -n "$(ss -H -ltn 'sport = :6010')"
 
           # Reinstall using automatic SSH detection and a multi-module download.
           bash ubuntu/init.sh --with-fail2ban --with-docker \
               --with-caddy-cloudflare --with-caddy-github.com/caddy-dns/route53
+          if ufw status | grep -E '^6010(/(tcp|udp))?[[:space:]]+.*ALLOW'; then
+              echo "Forwarded port 6010 was incorrectly allowed as an SSH login port." >&2
+              exit 1
+          fi
           sha256sum --check /var/lib/linux-init-ci/caddy-config.sha256
           sha256sum --check /var/lib/linux-init-ci/configured-ssh.sha256
           for service in fail2ban docker caddy; do

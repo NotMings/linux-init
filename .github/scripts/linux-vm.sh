@@ -157,6 +157,14 @@ EOF
         shift 2
         ssh "${SSH_OPTIONS[@]}" -p "$port" "$VM_DISTRO@127.0.0.1" "$@"
         ;;
+    forward)
+        [[ $# -eq 2 && "$2" =~ ^[0-9]{1,5}$ ]]
+        forward_port=$((10#$2))
+        (( forward_port >= 1 && forward_port <= 65535 ))
+        ssh "${SSH_OPTIONS[@]}" -p 2222 -o ExitOnForwardFailure=yes \
+            -M -S "$VM_DIR/forward.sock" -fNT \
+            -R "$forward_port:127.0.0.1:2222" "$VM_DISTRO@127.0.0.1"
+        ;;
     reboot)
         previous_boot="$(guest_ssh cat /proc/sys/kernel/random/boot_id)"
         status=0
@@ -184,12 +192,16 @@ EOF
         fi
         ;;
     stop)
+        if [[ -S "$VM_DIR/forward.sock" ]]; then
+            ssh "${SSH_OPTIONS[@]}" -p 2222 -S "$VM_DIR/forward.sock" \
+                -O exit "$VM_DISTRO@127.0.0.1" || true
+        fi
         if [[ -f "$VM_DIR/qemu.pid" ]]; then
             sudo kill "$(sudo cat "$VM_DIR/qemu.pid")" || true
         fi
         ;;
     *)
-        echo "Usage: $0 {start|copy|exec|exec-secondary|exec-port|reboot|logs|stop}" >&2
+        echo "Usage: $0 {start|copy|exec|exec-secondary|exec-port|forward|reboot|logs|stop}" >&2
         exit 1
         ;;
 esac
